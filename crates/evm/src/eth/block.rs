@@ -123,10 +123,14 @@ where
         }
 
         // Execute transaction.
+        let now = std::time::Instant::now();
         let result_and_state = self
             .evm
             .transact(tx)
             .map_err(|err| BlockExecutionError::evm(err, tx.tx().trie_hash()))?;
+        let elapsed = now.elapsed();
+        tracing::info!(target: "reth::acl", time = ?elapsed, "Finished executing evm");
+
         self.system_caller
             .on_state(StateChangeSource::Transaction(self.receipts.len()), &result_and_state.state);
         let ResultAndState { result, state } = result_and_state;
@@ -148,7 +152,10 @@ where
         }));
 
         // Commit the state changes.
+        let now = std::time::Instant::now();
         self.evm.db_mut().commit(state);
+        let elapsed = now.elapsed();
+        tracing::info!(target: "reth::acl", time = ?elapsed, "Committing state changes");
 
         Ok(gas_used)
     }
