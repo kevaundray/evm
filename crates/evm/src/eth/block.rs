@@ -24,6 +24,7 @@ use revm::{
     context::result::ExecutionResult, context_interface::result::ResultAndState, database::State,
     DatabaseCommit, Inspector,
 };
+use tracing::info;
 
 /// Context for Ethereum block execution.
 #[derive(Debug, Clone)]
@@ -121,7 +122,6 @@ where
             }
             .into());
         }
-
         // Execute transaction.
         let now = std::time::Instant::now();
         let result_and_state = self
@@ -186,7 +186,6 @@ where
             self.ctx.ommers,
             self.ctx.withdrawals.as_deref(),
         );
-
         // Irregular state change at Ethereum DAO hardfork
         if self
             .spec
@@ -226,6 +225,28 @@ where
             self.evm,
             BlockExecutionResult { receipts: self.receipts, requests, gas_used: self.gas_used },
         ))
+    }
+
+    fn execute_block(
+        mut self,
+        transactions: impl IntoIterator<Item = impl ExecutableTx<Self>>,
+    ) -> Result<BlockExecutionResult<Self::Receipt>, BlockExecutionError>
+    where
+        Self: Sized,
+    {
+        self.apply_pre_execution_changes()?;
+
+        for tx in transactions {
+            let tx_hash = tx.tx().trie_hash();
+
+            let now = std::time::Instant::now();
+            self.execute_transaction(tx)?;
+            let elapsed = now.elapsed();
+
+            info!(target: "reth::acl", tx_hash = %tx_hash, time = ?elapsed, "Finished processing tx");
+        }
+
+        self.apply_post_execution_changes()
     }
 
     fn set_state_hook(&mut self, hook: Option<Box<dyn OnStateHook>>) {
