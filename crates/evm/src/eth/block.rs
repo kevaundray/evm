@@ -236,14 +236,12 @@ where
     {
         self.apply_pre_execution_changes()?;
 
-        for tx in transactions {
-            let tx_hash = tx.tx().trie_hash();
-
+        let block_number = self.evm.block().number;
+        for (tx_number, tx) in transactions.into_iter().enumerate() {
             let now = std::time::Instant::now();
             self.execute_transaction(tx)?;
             let elapsed = now.elapsed();
-
-            info!(target: "reth::acl", tx_hash = %tx_hash, time = ?elapsed, "Finished processing tx");
+            info!(target: "reth::acl", block_number = %block_number, tx_number = %tx_number, time = ?elapsed, "Finished processing tx");
         }
 
         self.apply_post_execution_changes()
