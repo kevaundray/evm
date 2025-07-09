@@ -1,14 +1,42 @@
-//! Abstraction of an executable transaction.
+//! Transaction abstractions for EVM execution.
+//!
+//! This module provides traits and implementations for converting various transaction formats
+//! into a unified transaction environment ([`TxEnv`]) that the EVM can execute. The main purpose
+//! of these traits is to enable flexible transaction input while maintaining type safety.
 
 use alloy_consensus::{
-    transaction::Recovered, EthereumTxEnvelope, TxEip1559, TxEip2930, TxEip4844, TxEip7702,
-    TxLegacy,
+    crypto::secp256k1, transaction::Recovered, EthereumTxEnvelope, TxEip1559, TxEip2930, TxEip4844,
+    TxEip7702, TxLegacy,
 };
-use alloy_eips::{eip2718::WithEncoded, Typed2718};
+use alloy_eips::{
+    eip2718::WithEncoded,
+    eip7702::{RecoveredAuthority, RecoveredAuthorization},
+    Typed2718,
+};
 use alloy_primitives::{Address, Bytes, TxKind};
-use revm::context::TxEnv;
+use revm::{context::TxEnv, context_interface::either::Either};
 
 /// Trait marking types that can be converted into a transaction environment.
+///
+/// This is the primary trait that enables flexible transaction input for the EVM. The EVM's
+/// associated type `Evm::Tx` must implement this trait, and the `transact` method accepts
+/// any type implementing [`IntoTxEnv<Evm::Tx>`](IntoTxEnv).
+///
+/// # Example
+///
+/// ```ignore
+/// // Direct TxEnv usage
+/// let tx_env = TxEnv { caller: address, gas_limit: 100_000, ... };
+/// evm.transact(tx_env)?;
+///
+/// // Using a recovered transaction
+/// let recovered = tx.recover_signer()?;
+/// evm.transact(recovered)?;
+///
+/// // Using a transaction with encoded bytes
+/// let with_encoded = WithEncoded::new(recovered, encoded_bytes);
+/// evm.transact(with_encoded)?;
+/// ```
 pub trait IntoTxEnv<TxEnv> {
     /// Converts `self` into [`TxEnv`].
     fn into_tx_env(self) -> TxEnv;
@@ -21,15 +49,42 @@ impl IntoTxEnv<Self> for TxEnv {
 }
 
 #[cfg(feature = "op")]
-impl<T: revm::context::Transaction> IntoTxEnv<Self> for op_revm::OpTransaction<T> {
+impl<T> IntoTxEnv<Self> for op_revm::OpTransaction<T>
+where
+    T: revm::context_interface::transaction::Transaction,
+{
     fn into_tx_env(self) -> Self {
         self
     }
 }
 
-/// Helper user-facing trait to allow implementing [`IntoTxEnv`] on instances of [`Recovered`].
+/// Helper trait for building a transaction environment from a recovered transaction.
+///
+/// This trait enables the conversion of consensus transaction types (which have been recovered
+/// with their sender address) into the EVM's transaction environment. It's automatically used
+/// when a [`Recovered<T>`] type is passed to the EVM's `transact` method.
+///
+/// The expectation is that any recovered consensus transaction can be converted into the
+/// transaction type that the EVM operates on (typically [`TxEnv`]).
+///
+/// # Implementation
+///
+/// This trait is implemented for all standard Ethereum transaction types ([`TxLegacy`],
+/// [`TxEip2930`], [`TxEip1559`], [`TxEip4844`], [`TxEip7702`]) and transaction envelopes
+/// ([`EthereumTxEnvelope`]).
+///
+/// # Example
+///
+/// ```ignore
+/// // Recover the signer from a transaction
+/// let recovered = tx.recover_signer()?;
+///
+/// // The recovered transaction can now be used with the EVM
+/// // This works because Recovered<T> implements IntoTxEnv when T implements FromRecoveredTx
+/// evm.transact(recovered)?;
+/// ```
 pub trait FromRecoveredTx<Tx> {
-    /// Builds a `TxEnv` from a transaction and a sender address.
+    /// Builds a [`TxEnv`] from a transaction and a sender address.
     fn from_recovered_tx(tx: &Tx, sender: Address) -> Self;
 }
 
@@ -205,7 +260,20 @@ impl FromRecoveredTx<TxEip7702> for TxEnv {
             chain_id: Some(*chain_id),
             gas_priority_fee: Some(*max_priority_fee_per_gas),
             access_list: access_list.clone(),
-            authorization_list: authorization_list.clone(),
+            authorization_list: authorization_list
+                .iter()
+                .map(|auth| {
+                    Either::Right(RecoveredAuthorization::new_unchecked(
+                        auth.inner().clone(),
+                        auth.signature()
+                            .ok()
+                            .and_then(|signature| {
+                                secp256k1::recover_signer(&signature, auth.signature_hash()).ok()
+                            })
+                            .map_or(RecoveredAuthority::Invalid, RecoveredAuthority::Valid),
+                    ))
+                })
+                .collect(),
             ..Default::default()
         }
     }
@@ -217,9 +285,9 @@ impl FromTxWithEncoded<TxEip7702> for TxEnv {
     }
 }
 
-/// Helper trait to abstract over different `Recovered<T>` implementations.
+/// Helper trait to abstract over different [`Recovered<T>`] implementations.
 ///
-/// Implemented for `Recovered<T>`, `Recovered<&T>`, `&Recovered<T>`, `&Recovered<&T>`
+/// Implemented for [`Recovered<T>`], `Recovered<&T>`, `&Recovered<T>`, `&Recovered<&T>`
 #[auto_impl::auto_impl(&)]
 pub trait RecoveredTx<T> {
     /// Returns the transaction.
@@ -259,10 +327,38 @@ impl<Tx, T: RecoveredTx<Tx>> RecoveredTx<Tx> for WithEncoded<T> {
     }
 }
 
-/// Helper user-facing trait to allow implementing [`IntoTxEnv`] on instances of [`WithEncoded`].
-/// This allows creating transaction environments directly from EIP-2718 encoded bytes.
+/// Helper trait for building a transaction environment from a transaction with its encoded form.
+///
+/// This trait enables the conversion of consensus transaction types along with their EIP-2718
+/// encoded bytes into the EVM's transaction environment. It's automatically used when a
+/// [`WithEncoded<Recovered<T>>`](WithEncoded) type is passed to the EVM's `transact` method.
+///
+/// The main purpose of this trait is to allow preserving the original encoded transaction data
+/// alongside the parsed transaction, which can be useful for:
+/// - Signature verification
+/// - Transaction hash computation
+/// - Re-encoding for network propagation
+/// - Optimism transaction handling (which requires encoded data, for Data availability costs).
+///
+/// # Implementation
+///
+/// Most implementations simply delegate to [`FromRecoveredTx`], ignoring the encoded bytes.
+/// However, specialized implementations (like Optimism's `OpTransaction`) may use the encoded
+/// data for additional functionality.
+///
+/// # Example
+///
+/// ```ignore
+/// // Create a transaction with its encoded form
+/// let encoded_bytes = tx.encoded_2718();
+/// let recovered = tx.recover_signer()?;
+/// let with_encoded = WithEncoded::new(recovered, encoded_bytes);
+///
+/// // The transaction with encoded data can be used with the EVM
+/// evm.transact(with_encoded)?;
+/// ```
 pub trait FromTxWithEncoded<Tx> {
-    /// Builds a `TxEnv` from a transaction, its sender, and encoded transaction bytes.
+    /// Builds a [`TxEnv`] from a transaction, its sender, and encoded transaction bytes.
     fn from_encoded_tx(tx: &Tx, sender: Address, encoded: Bytes) -> Self;
 }
 
@@ -336,40 +432,56 @@ mod op {
     use op_revm::{transaction::deposit::DepositTransactionParts, OpTransaction};
     use revm::context::TxEnv;
 
+    impl FromRecoveredTx<OpTxEnvelope> for TxEnv {
+        fn from_recovered_tx(tx: &OpTxEnvelope, caller: Address) -> Self {
+            match tx {
+                OpTxEnvelope::Legacy(tx) => Self::from_recovered_tx(tx.tx(), caller),
+                OpTxEnvelope::Eip1559(tx) => Self::from_recovered_tx(tx.tx(), caller),
+                OpTxEnvelope::Eip2930(tx) => Self::from_recovered_tx(tx.tx(), caller),
+                OpTxEnvelope::Eip7702(tx) => Self::from_recovered_tx(tx.tx(), caller),
+                OpTxEnvelope::Deposit(tx) => Self::from_recovered_tx(tx.inner(), caller),
+            }
+        }
+    }
+
+    impl FromRecoveredTx<TxDeposit> for TxEnv {
+        fn from_recovered_tx(tx: &TxDeposit, caller: Address) -> Self {
+            let TxDeposit {
+                to,
+                value,
+                gas_limit,
+                input,
+                source_hash: _,
+                from: _,
+                mint: _,
+                is_system_transaction: _,
+            } = tx;
+            Self {
+                tx_type: tx.ty(),
+                caller,
+                gas_limit: *gas_limit,
+                kind: *to,
+                value: *value,
+                data: input.clone(),
+                ..Default::default()
+            }
+        }
+    }
+
+    impl FromTxWithEncoded<OpTxEnvelope> for TxEnv {
+        fn from_encoded_tx(tx: &OpTxEnvelope, caller: Address, _encoded: Bytes) -> Self {
+            Self::from_recovered_tx(tx, caller)
+        }
+    }
+
     impl FromTxWithEncoded<OpTxEnvelope> for OpTransaction<TxEnv> {
         fn from_encoded_tx(tx: &OpTxEnvelope, caller: Address, encoded: Bytes) -> Self {
-            let base = match tx {
-                OpTxEnvelope::Legacy(tx) => TxEnv::from_recovered_tx(tx.tx(), caller),
-                OpTxEnvelope::Eip1559(tx) => TxEnv::from_recovered_tx(tx.tx(), caller),
-                OpTxEnvelope::Eip2930(tx) => TxEnv::from_recovered_tx(tx.tx(), caller),
-                OpTxEnvelope::Eip7702(tx) => TxEnv::from_recovered_tx(tx.tx(), caller),
-                OpTxEnvelope::Deposit(tx) => {
-                    let TxDeposit {
-                        to,
-                        value,
-                        gas_limit,
-                        input,
-                        source_hash: _,
-                        from: _,
-                        mint: _,
-                        is_system_transaction: _,
-                    } = tx.inner();
-                    TxEnv {
-                        tx_type: tx.ty(),
-                        caller,
-                        gas_limit: *gas_limit,
-                        kind: *to,
-                        value: *value,
-                        data: input.clone(),
-                        ..Default::default()
-                    }
-                }
-            };
+            let base = TxEnv::from_recovered_tx(tx, caller);
 
             let deposit = if let OpTxEnvelope::Deposit(tx) = tx {
                 DepositTransactionParts {
                     source_hash: tx.source_hash,
-                    mint: tx.mint,
+                    mint: Some(tx.mint),
                     is_system_transaction: tx.is_system_transaction,
                 }
             } else {

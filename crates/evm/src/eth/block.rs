@@ -10,7 +10,7 @@ use crate::{
     block::{
         state_changes::{balance_increment_state, post_block_balance_increments},
         BlockExecutionError, BlockExecutionResult, BlockExecutor, BlockExecutorFactory,
-        BlockExecutorFor, BlockValidationError, ExecutableTx, OnStateHook,
+        BlockExecutorFor, BlockValidationError, CommitChanges, ExecutableTx, OnStateHook,
         StateChangePostBlockSource, StateChangeSource, SystemCaller,
     },
     Database, Evm, EvmFactory, FromRecoveredTx, FromTxWithEncoded,
@@ -96,7 +96,7 @@ where
     fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
         // Set state clear flag if the block is after the Spurious Dragon hardfork.
         let state_clear_flag =
-            self.spec.is_spurious_dragon_active_at_block(self.evm.block().number);
+            self.spec.is_spurious_dragon_active_at_block(self.evm.block().number.saturating_to());
         self.evm.db_mut().set_state_clear_flag(state_clear_flag);
 
         self.system_caller.apply_blockhashes_contract_call(self.ctx.parent_hash, &mut self.evm)?;
@@ -106,11 +106,11 @@ where
         Ok(())
     }
 
-    fn execute_transaction_with_result_closure(
+    fn execute_transaction_with_commit_condition(
         &mut self,
         tx: impl ExecutableTx<Self>,
-        f: impl FnOnce(&ExecutionResult<<Self::Evm as Evm>::HaltReason>),
-    ) -> Result<u64, BlockExecutionError> {
+        f: impl FnOnce(&ExecutionResult<<Self::Evm as Evm>::HaltReason>) -> CommitChanges,
+    ) -> Result<Option<u64>, BlockExecutionError> {
         // The sum of the transaction's gas limit, Tg, and the gas utilized in this block prior,
         // must be no greater than the block's gasLimit.
         let block_available_gas = self.evm.block().gas_limit - self.gas_used;
@@ -123,19 +123,20 @@ where
             .into());
         }
         // Execute transaction.
+
         let now = std::time::Instant::now();
-        let result_and_state = self
+        let ResultAndState { result, state } = self
             .evm
             .transact(tx)
             .map_err(|err| BlockExecutionError::evm(err, tx.tx().trie_hash()))?;
         let elapsed = now.elapsed();
         tracing::info!(target: "reth::acl", time = ?elapsed, "Finished executing evm");
 
-        self.system_caller
-            .on_state(StateChangeSource::Transaction(self.receipts.len()), &result_and_state.state);
-        let ResultAndState { result, state } = result_and_state;
+        if !f(&result).should_commit() {
+            return Ok(None);
+        }
 
-        f(&result);
+        self.system_caller.on_state(StateChangeSource::Transaction(self.receipts.len()), &state);
 
         let gas_used = result.gas_used();
 
@@ -157,13 +158,16 @@ where
         let elapsed = now.elapsed();
         tracing::info!(target: "reth::acl", time = ?elapsed, "Committing state changes");
 
-        Ok(gas_used)
+        Ok(Some(gas_used))
     }
 
     fn finish(
         mut self,
     ) -> Result<(Self::Evm, BlockExecutionResult<R::Receipt>), BlockExecutionError> {
-        let requests = if self.spec.is_prague_active_at_timestamp(self.evm.block().timestamp) {
+        let requests = if self
+            .spec
+            .is_prague_active_at_timestamp(self.evm.block().timestamp.saturating_to())
+        {
             // Collect all EIP-6110 deposits
             let deposit_requests =
                 eip6110::parse_deposits_from_receipts(&self.spec, &self.receipts)?;
@@ -190,7 +194,7 @@ where
         if self
             .spec
             .ethereum_fork_activation(EthereumHardfork::Dao)
-            .transitions_at_block(self.evm.block().number)
+            .transitions_at_block(self.evm.block().number.saturating_to())
         {
             // drain balances from hardcoded addresses.
             let drained_balance: u128 = self

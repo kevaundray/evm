@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.5.0"
+version = "0.14.0"
 edition = "2021"
 rust-version = "1.85"
 authors = ["Alloy Contributors"]
@@ -35,25 +35,26 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [workspace.dependencies]
-alloy-evm = { version = "0.5.0", path = "crates/evm", default-features = false }
-alloy-op-evm = { version = "0.5.0", path = "crates/op-evm", default-features = false }
+alloy-evm = { version = "0.14.0", path = "crates/evm", default-features = false }
+alloy-op-evm = { version = "0.14.0", path = "crates/op-evm", default-features = false }
 
 # alloy
 alloy-eip2124 = { version = "0.2", default-features = false }
 alloy-chains = { version = "0.2.0", default-features = false }
-alloy-eips = { version = "0.14", default-features = false }
-alloy-consensus = { version = "0.14", default-features = false }
+alloy-eips = { version = "1.0", default-features = false }
+alloy-consensus = { version = "1.0.0", default-features = false }
 alloy-primitives = { version = "1.0.0", default-features = false }
 alloy-sol-types = { version = "1.0.0", default-features = false }
 alloy-hardforks = { version = "0.2" }
+alloy-rpc-types-eth = { version = "1.0.0", default-features = false }
 
 # op-alloy
 alloy-op-hardforks = { version = "0.2" }
-op-alloy-consensus = { version = "0.14", default-features = false }
+op-alloy-consensus = { version = "0.18", default-features = false }
 
 # revm
-revm = { version = "22.0.0", default-features = false }
-op-revm = { version = "3.0.1", default-features = false }
+revm = { version = "27.0.2", default-features = false }
+op-revm = { version = "8.0.2", default-features = false }
 
 # misc
 auto_impl = "1"
@@ -62,3 +63,7 @@ serde = { version = "1", default-features = false, features = ["derive"] }
 thiserror = { version = "2.0.0", default-features = false }
 serde_json = "1"
 tracing = "*"
+
+#[patch.crates-io]
+#revm = { git = "https://github.com/bluealloy/revm", rev = "11b16259" }
+#op-revm = { git = "https://github.com/bluealloy/revm", rev = "11b16259" }
