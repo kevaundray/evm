@@ -134,6 +134,9 @@ where
         self.system_caller
             .apply_beacon_root_contract_call(self.ctx.parent_beacon_block_root, &mut self.evm)?;
 
+        // EIP-XXXX: Deploy modexp contract at Osaka
+        crate::block::system_calls::eip_modexp::deploy_modexp_contract(&self.spec, &mut self.evm)?;
+
         Ok(())
     }
 

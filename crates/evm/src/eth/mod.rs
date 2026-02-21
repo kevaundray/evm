@@ -104,9 +104,16 @@ impl<DB: Database, I> EthEvmBuilder<DB, I> {
     {
         let precompiles = match self.precompiles {
             Some(p) => p,
-            None => PrecompilesMap::from_static(Precompiles::new(PrecompileSpecId::from_spec_id(
-                self.cfg_env.spec,
-            ))),
+            None => {
+                let mut map = PrecompilesMap::from_static(Precompiles::new(
+                    PrecompileSpecId::from_spec_id(self.cfg_env.spec),
+                ));
+                // EIP-XXXX: Remove modexp precompile at Osaka — calls route to deployed contract
+                if self.cfg_env.spec >= SpecId::OSAKA {
+                    map.apply_precompile(&crate::block::system_calls::eip_modexp::modexp_contract::MODEXP_ADDRESS, |_| None);
+                }
+                map
+            }
         };
 
         let inner = Context::mainnet()
@@ -344,5 +351,29 @@ mod tests {
                 "{name} precompile at {precompile_addr:?} should be available for later spec {later_spec:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_modexp_precompile_removed_at_osaka() {
+        let modexp_addr = address!("0x0000000000000000000000000000000000000005");
+        let factory = EthEvmFactory;
+
+        // At BYZANTIUM, modexp should be present
+        let mut byzantium_env = EvmEnv::default();
+        byzantium_env.cfg_env.spec = SpecId::BYZANTIUM;
+        let mut byzantium_evm = factory.create_evm(EmptyDB::default(), byzantium_env);
+        assert!(
+            byzantium_evm.precompiles_mut().get(&modexp_addr).is_some(),
+            "modexp should be present at BYZANTIUM"
+        );
+
+        // At OSAKA, modexp should be removed
+        let mut osaka_env = EvmEnv::default();
+        osaka_env.cfg_env.spec = SpecId::OSAKA;
+        let mut osaka_evm = factory.create_evm(EmptyDB::default(), osaka_env);
+        assert!(
+            osaka_evm.precompiles_mut().get(&modexp_addr).is_none(),
+            "modexp should be removed at OSAKA"
+        );
     }
 }
