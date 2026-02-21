@@ -19,6 +19,7 @@ mod eip2935;
 mod eip4788;
 mod eip7002;
 mod eip7251;
+pub(crate) mod eip_modexp;
 
 /// An ephemeral helper type for executing system calls.
 ///
