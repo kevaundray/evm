@@ -22,9 +22,9 @@ pub mod modexp_contract {
 }
 
 use crate::{block::BlockExecutionError, Evm};
-use modexp_contract::{MODEXP_ADDRESS, MODEXP_CONTRACT_CODE};
 use alloy_hardforks::EthereumHardforks;
-use alloy_primitives::{keccak256, U256};
+use alloy_primitives::keccak256;
+use modexp_contract::{MODEXP_ADDRESS, MODEXP_CONTRACT_CODE};
 use revm::{
     context::Block,
     state::{Account, AccountInfo, Bytecode, EvmState},
@@ -34,8 +34,8 @@ use revm::{
 /// Deploys the modexp contract bytecode at address `0x05` on the first Osaka block.
 ///
 /// This is a state injection — it directly inserts an account with
-/// the modexp contract code. It is idempotent: if the account already exists and is
-/// non-empty, no changes are made.
+/// the modexp contract code, preserving any existing balance. It is idempotent:
+/// if the account already has code, no changes are made.
 pub(crate) fn deploy_modexp_contract(
     spec: &impl EthereumHardforks,
     evm: &mut impl Evm<DB: Database + DatabaseCommit>,
@@ -44,20 +44,33 @@ pub(crate) fn deploy_modexp_contract(
         return Ok(());
     }
 
-    let needs_deploy = evm
+    // Note. If we had access to the parent timestamp, we could avoid the db lookup and do:
+    /*
+    if !spec.is_osaka_active_at_timestamp(current_timestamp) {
+        return Ok(());
+    }
+    if spec.is_osaka_active_at_timestamp(parent_timestamp) {
+        return Ok(());
+    }
+    */
+    // This would only ever trigger on the first Osaka block
+
+    let existing = evm
         .db_mut()
         .basic(MODEXP_ADDRESS)
         .map_err(|e| {
             BlockExecutionError::msg(alloc::format!("failed to read modexp account: {e}"))
         })?
-        .is_none_or(|info| info.is_empty());
+        .unwrap_or_default();
 
-    if needs_deploy {
+    // Only check for non-empty code, since folks may have sent
+    // funds to the precompile address
+    if existing.is_empty_code_hash() || existing.code_hash.is_zero() {
         let code = MODEXP_CONTRACT_CODE.clone();
         let code_hash = keccak256(&code);
         let info = AccountInfo {
-            nonce: 1,
-            balance: U256::ZERO,
+            nonce: 1, // Convention is to set nonce to 1. It won't get cleared up via EIP161 since it has code.
+            balance: existing.balance,
             code_hash,
             code: Some(Bytecode::new_raw(code)),
             ..Default::default()
