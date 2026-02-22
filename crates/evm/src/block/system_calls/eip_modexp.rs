@@ -1,4 +1,5 @@
-pub(crate) mod modexp_contract {
+/// Constants for the modexp contract deployment at Osaka.
+pub mod modexp_contract {
     // TODO: This would go into alloy-eips -- leaving it here so we don't need
     // to modify that repo for now.
 
@@ -12,12 +13,12 @@ pub(crate) mod modexp_contract {
     use alloy_primitives::{address, Address, Bytes};
 
     /// Address of the modexp precompile / deployed contract.
-    pub(crate) const MODEXP_ADDRESS: Address = address!("0x0000000000000000000000000000000000000005");
+    pub const MODEXP_ADDRESS: Address = address!("0x0000000000000000000000000000000000000005");
 
     /// EVM bytecode deployed at [`MODEXP_ADDRESS`] at Osaka.
     ///
     /// Placeholder — will be replaced with the real modexp contract bytecode once finalized.
-    pub(crate) static MODEXP_CONTRACT_CODE: Bytes = Bytes::from_static(&[0x00]);
+    pub static MODEXP_CONTRACT_CODE: Bytes = Bytes::from_static(&[0x00]);
 }
 
 use crate::{block::BlockExecutionError, Evm};
