@@ -110,7 +110,10 @@ impl<DB: Database, I> EthEvmBuilder<DB, I> {
                 ));
                 // EIP-XXXX: Remove modexp precompile at Osaka — calls route to deployed contract
                 if self.cfg_env.spec >= SpecId::OSAKA {
-                    map.apply_precompile(&crate::block::system_calls::eip_modexp::modexp_contract::MODEXP_ADDRESS, |_| None);
+                    map.apply_precompile(
+                        &crate::block::system_calls::eip_modexp::modexp_contract::MODEXP_ADDRESS,
+                        |_| None,
+                    );
                 }
                 map
             }

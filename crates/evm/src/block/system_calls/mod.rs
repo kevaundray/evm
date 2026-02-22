@@ -20,7 +20,7 @@ mod eip4788;
 mod eip7002;
 mod eip7251;
 // TODO: Make this pub for now since Reth want the address and
-// and the contract code. Once it gets into alloy-eips, then 
+// and the contract code. Once it gets into alloy-eips, then
 // we can modify this accordingly.
 pub mod eip_modexp;
 
